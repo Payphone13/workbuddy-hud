@@ -11,9 +11,13 @@ WorkBuddy 客户端本身就能看思考过程、执行步骤和权限弹窗，�
 
 只支持 Windows 10/11 64 位，电脑上需要先装好并登录 WorkBuddy 桌面版。整个程序是一个 3.5MB 的单文件，纯本地运行，不联网也不上传任何数据。
 
-| 主界面 | 任务切换与定时任务 | 设置界面 |
-| :---: | :---: | :---: |
-| ![主界面](docs/screenshots/main.png) | ![任务切换与定时任务](docs/screenshots/sessions.png) | ![设置界面](docs/screenshots/settings.png) |
+| 实时监控面板 | 多任务与定时任务回看 |
+| :---: | :---: |
+| ![实时监控面板](docs/screenshots/showcase-01.png) | ![多任务与定时任务回看](docs/screenshots/showcase-02.png) |
+
+| 自定义与高危拦截 | 轻量开源 |
+| :---: | :---: |
+| ![自定义与高危拦截](docs/screenshots/showcase-03.png) | ![轻量开源](docs/screenshots/showcase-04.png) |
 
 ## 🚀 怎么用
 
