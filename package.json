@@ -1,0 +1,21 @@
+{
+  "name": "workbuddy-hud",
+  "version": "0.6.3",
+  "private": false,
+  "license": "MIT",
+  "author": "Payphone13",
+  "homepage": "https://github.com/Payphone13/workbuddy-hud",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Payphone13/workbuddy-hud.git"
+  },
+  "description": "WorkBuddy 桌面状态面板：思考内容 / 步骤 / 点数 / 权限提醒",
+  "scripts": {
+    "service": "node src/service/server.js",
+    "test:risk": "node tools/test-risk.js",
+    "test:gate": "node tools/test-gate.js",
+    "icons": "node tools/make-icons.js",
+    "build": "bash tauri/build.sh",
+    "pack": "node tools/build-portable.js --zip"
+  }
+}

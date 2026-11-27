@@ -1,0 +1,19 @@
+# 临时文件与本地构建缓存
+tmp/
+dist/
+node_modules/
+tauri/target/
+tauri/gen/schemas/
+
+# 仅留本地的文档
+docs/开发记录.md
+
+# 日志与调试产物
+*.log
+npm-debug.log*
+
+# 系统与编辑器生成文件
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,15 @@
+# 默认自动规范换行符
+* text=auto
+
+# Windows 批处理必须使用 CRLF，避免 cmd.exe 解析错位
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本保持 LF
+*.sh text eol=lf
+
+# 二进制资源
+*.png binary
+*.ico binary
+*.exe binary
+*.zip binary

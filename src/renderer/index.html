@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WorkBuddy 状态面板</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- 标题栏：始终存在，折叠时只剩这一行 -->
+    <header class="hd">
+      <div class="hd-left">
+        <span id="dot" class="dot idle" title="状态灯"
+          ><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg
+        ></span>
+        <span id="status" class="status">连接中</span>
+      </div>
+      <div class="hd-right">
+        <span id="model" class="model off"></span>
+        <button id="btn-settings" class="icon" title="设置">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.35.42.64.77.78H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        <button id="btn-fold" class="icon" title="折叠 / 展开">&#8212;</button>
+        <button id="btn-close" class="icon" title="收进托盘（快捷键可唤出）">&times;</button>
+      </div>
+    </header>
+
+    <!-- 滚动区：只有这里随内容滚动，标题栏与底栏固定 -->
+    <div id="scroll" class="scroll">
+      <div id="content" class="content">
+        <div class="title-row">
+          <div id="title" class="title">等待 WorkBuddy 活动…</div>
+          <button id="btn-sess" class="sessbtn hidden" title="切换要观察的会话">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 6h16M4 12h16M4 18h10"></path>
+            </svg>
+            <span id="sess-label">1/1</span>
+          </button>
+        </div>
+
+        <main id="body" class="body">
+          <section id="blk-thinking" class="block">
+            <div class="block-hd"><span>思考</span><span id="think-at" class="muted"></span></div>
+            <div id="thinking" class="thinking empty">暂无思考内容</div>
+          </section>
+
+          <section id="blk-steps" class="block">
+            <div class="block-hd"><span>步骤</span><span id="step-count" class="muted"></span></div>
+            <ul id="steps" class="steps"></ul>
+          </section>
+
+          <section id="blk-metrics" class="block metrics">
+            <div class="metric">
+              <div class="metric-label">点数</div>
+              <div id="m-credit" class="metric-value">0.00</div>
+              <div class="metric-sub">本会话累计</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Token</div>
+              <div id="m-token" class="metric-value">0</div>
+              <div id="m-token-sub" class="metric-sub">输出 / 思考</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">上下文</div>
+              <div id="m-ctx" class="metric-value">0%</div>
+              <div class="bar"><div id="m-bar" class="bar-fill"></div></div>
+            </div>
+          </section>
+
+          <section id="perm" class="perm hidden">
+            <div class="perm-hd">
+              <span id="perm-title">需要你确认</span>
+              <span id="perm-risk" class="risk hidden">有风险</span>
+              <button id="btn-perm-copy" class="mini hidden" title="复制要执行的内容">复制</button>
+            </div>
+            <div id="perm-text" class="perm-text"></div>
+            <div id="perm-target" class="perm-target hidden"></div>
+            <div id="perm-actions" class="perm-actions">
+              <span id="perm-left" class="perm-left"></span>
+              <button id="btn-deny" class="btn ghost">拒绝</button>
+              <button id="btn-allow" class="btn">允许</button>
+            </div>
+            <div id="perm-note" class="perm-note"></div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <footer class="ft">
+      <span id="meta" class="muted"></span>
+      <span id="conn" class="conn" title="本地服务连接状态">●</span>
+    </footer>
+
+    <!-- 会话选择下拉：挂在 app 上而非内容区，避免被滚动区裁剪 -->
+    <div id="sess-menu" class="sess-menu hidden" role="listbox" aria-label="选择会话">
+      <div class="sess-hd">要观察哪个会话</div>
+      <div id="sess-list" class="sess-list"></div>
+      <div class="sess-tip">选中后固定观看该会话，不再随活跃度自动跳动</div>
+    </div>
+
+    <!-- 设置浮层：覆盖在面板之上，不改变窗口高度 -->
+    <div id="sheet" class="sheet hidden" role="dialog" aria-label="设置">
+      <div class="sheet-hd">
+        <span>设置</span>
+        <button id="sheet-close" class="icon" title="关闭">&times;</button>
+      </div>
+
+      <div class="sheet-body">
+        <div class="grp">
+          <div class="grp-t">内容</div>
+          <div class="row">
+            <span class="row-l">步骤条数</span>
+            <input id="set-steps" class="rng" type="range" min="1" max="10" step="1" />
+            <span id="val-steps" class="row-v">6</span>
+          </div>
+          <div class="row">
+            <span class="row-l">思考行数</span>
+            <input id="set-lines" class="rng" type="range" min="2" max="10" step="1" />
+            <span id="val-lines" class="row-v">6</span>
+          </div>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">显示区块</div>
+          <div class="chks">
+            <label class="chk"><input id="blk-thinking-c" type="checkbox" /> 思考</label>
+            <label class="chk"><input id="blk-steps-c" type="checkbox" /> 步骤</label>
+            <label class="chk"><input id="blk-metrics-c" type="checkbox" /> 指标</label>
+            <label class="chk"><input id="blk-model-c" type="checkbox" /> 模型</label>
+            <label class="chk" title="勾选＝弹卡并拦截；取消＝不弹卡，也不再拦截任何操作"><input id="blk-perm-c" type="checkbox" /> 确认卡（拦截）</label>
+          </div>
+          <div id="perm-block-msg" class="hint"></div>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">权限</div>
+          <div class="row">
+            <span class="row-l">监管模式</span>
+            <select id="set-gate" class="sel">
+              <option value="off">关闭（全部放行）</option>
+              <option value="risky">只拦危险操作</option>
+              <option value="all">每一步都问我</option>
+            </select>
+          </div>
+          <div id="gate-msg" class="msg explain">危险操作会在面板里弹确认卡；你点「允许」才继续，点「拒绝」就中止。</div>
+          <div class="row">
+            <span class="row-l">无人应答时</span>
+            <select id="set-timeout" class="sel">
+              <option value="hold">一直等着（上限 60 分钟，到点自动拒绝）</option>
+              <option value="deny10">等 10 分钟，到点自动拒绝</option>
+              <option value="pass1">等 1 分钟，到点自动放行（旧行为）</option>
+            </select>
+          </div>
+          <div id="timeout-msg" class="msg explain"></div>
+          <div class="msg sep">退出后会发生什么：点 × 只是收进托盘，面板还在后台跑，上面这套规则继续生效；从托盘选「退出…」之后面板就关了，没有任何人替你把关 —— WorkBuddy 完全按它自己设置里的权限模式走。它要是「跳过确认」，命令会直接执行，不会再问你一句。</div>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">窗口</div>
+          <label class="chk wide-chk"><input id="set-ontop" type="checkbox" /> 保持在最上层</label>
+          <div class="row">
+            <span class="row-l">显隐快捷键</span>
+            <button id="btn-key" class="keybtn">Ctrl+Alt+W</button>
+          </div>
+          <div id="key-msg" class="msg"></div>
+          <button id="btn-autoheight" class="wide">恢复自适应高度</button>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">记录</div>
+          <label class="chk wide-chk"><input id="set-logask" type="checkbox" /> 退出时先问我一下</label>
+          <div class="row">
+            <span class="row-l">当前记录</span>
+            <span id="val-logsize" class="row-v">—</span>
+          </div>
+          <div id="log-msg" class="msg">这些是面板用来显示「思考与步骤」的旁听记录，只服务显示；清掉不影响 WorkBuddy 里的任务、对话和已经产出的结果。</div>
+          <button id="btn-clear-log" class="wide">现在清空记录</button>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">颜色说明</div>
+          <ul class="legend">
+            <li><i class="dot idle"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>空闲</b><span>没有活跃会话</span></li>
+            <li><i class="dot working"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>在跑</b><span>思考 / 执行 / 读取，无需你操作</span></li>
+            <li><i class="dot waiting"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>等你确认</b><span>WorkBuddy 弹了权限窗，要你去它的窗口点允许（闪）</span></li>
+            <li><i class="dot reply"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>等你回话</b><span>这一轮答完了，最后一句是在问你（不闪）</span></li>
+            <li><i class="dot done"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>已完成</b><span>本轮结束，可以看结果</span></li>
+            <li><i class="dot failed"><svg viewBox="0 0 8 8" aria-hidden="true" focusable="false"><circle cx="4" cy="4" r="4"></circle></svg></i><b>出错</b><span>工具或请求失败</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 固定底条：内容再多也不用滚到底才能点 -->
+      <div class="sheet-ft">
+        <button id="btn-reset" class="wide ghost">恢复默认设置</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
