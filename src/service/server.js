@@ -22,6 +22,7 @@ const { Store } = require("./store");
 const { TranscriptReader } = require("./transcript");
 const { readUsage, listSessions } = require("./credit");
 const { hub, gateMode, waitPolicy, waitPolicyKey } = require("./permissions");
+const signin = require("./signin");
 
 const store = new Store();
 const readers = new Map(); // sessionId -> TranscriptReader
@@ -59,6 +60,11 @@ function withPending(snap) {
     gateTimeout: waitPolicyKey(),
     waitHint: waitPolicy().hint,
     tasks: listSessions(24),
+    /**
+     * 积分信息。signin 内部是同步读内存缓存，所以塞进快照不会拖慢推送。
+     * 这里只可能是白名单字段 —— 令牌和响应原文都留在 signin 模块里出不来。
+     */
+    creditInfo: signin.getInfo(),
   });
 }
 
@@ -254,7 +260,17 @@ function serveStatic(req, res) {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] || "application/octet-stream" });
+    /**
+     * no-cache：允许缓存但每次都要回源校验。
+     *
+     * 以前这里什么头都不发，浏览器就按启发式规则自己猜缓存多久 —— 升级到
+     * 新版本后仍拿旧 CSS 渲染，面板会出现"结构变了样式没变"的怪样子。
+     * 这些文件都很小（几十 KB），校验一次的成本远低于显示错版。
+     */
+    res.writeHead(200, {
+      "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
+      "Cache-Control": "no-cache",
+    });
     res.end(data);
   });
 }
@@ -421,6 +437,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url === "/api/credit/refresh" && req.method === "POST") {
+    if (!local) {
+      sendJson(res, 403, { ok: false, reason: "非本机请求" });
+      return;
+    }
+    try {
+      const creditInfo = await signin.refreshNow();
+      sendJson(res, 200, { ok: true, creditInfo });
+    } catch (_) {
+      // 失败也回 200：前端要的是"这次没成"，不是让 fetch 抛异常
+      sendJson(res, 200, { ok: false, reason: "刷新失败", creditInfo: signin.getInfo() });
+    }
+    return;
+  }
+
+  if (url === "/api/credit/claim" && req.method === "POST") {
+    if (!local) {
+      sendJson(res, 403, { ok: false, reason: "非本机请求" });
+      return;
+    }
+    try {
+      sendJson(res, 200, await signin.claimNow());
+    } catch (_) {
+      sendJson(res, 200, { ok: false, reason: "领取失败", creditInfo: signin.getInfo() });
+    }
+    return;
+  }
+
   serveStatic(req, res);
 });
 
@@ -465,6 +509,12 @@ function start(preferredPort) {
         timers.push(setInterval(pollTranscripts, 500));
         timers.push(setInterval(pollUsage, 1500));
         pollUsage();
+        /**
+         * 积分的低频调度（1 分钟判断一次，默认关闭时不发任何请求）。
+         * 变更时 store.touch() 推一次快照，界面立刻跟着变 —— 但不能塞进
+         * 1.5 秒的渲染轮询里，那是拿网络请求去换帧率。
+         */
+        signin.start(() => store.touch());
         resolve({ port: actual });
       });
     };
@@ -476,6 +526,7 @@ function start(preferredPort) {
 function stop() {
   for (const t of timers) clearInterval(t);
   timers.length = 0;
+  signin.stop();
   // 面板关掉就没人能授权了：按安全侧拒绝，绝不默认放行
   hub.releaseAll("面板已关闭，未获得授权，已拒绝", "deny");
   try {

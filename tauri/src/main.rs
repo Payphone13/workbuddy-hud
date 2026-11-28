@@ -32,6 +32,10 @@ const BACKEND: &[(&str, &[u8])] = &[
     ("credit.js", include_bytes!("../../src/service/credit.js")),
     ("permissions.js", include_bytes!("../../src/service/permissions.js")),
     ("risk.js", include_bytes!("../../src/service/risk.js")),
+    ("signin.js", include_bytes!("../../src/service/signin.js")),
+    // 解密助手不是被 require 进来的模块，而是 spawn 时用 -e 传给客户端的源码。
+    // 它必须跟着后端一起落到 runtime 目录，否则打包成 exe 后读不到。
+    ("auth-helper.js", include_bytes!("../../src/service/auth-helper.js")),
 ];
 
 /// 钩子安装脚本也内嵌：托盘里的「修复 / 撤销对接」直接跑它，
@@ -69,6 +73,9 @@ pub struct St {
     guard_until: Mutex<Instant>,
     /// 页面报上来的 devicePixelRatio：CSS 像素 × 它 = 物理像素
     dpr: Mutex<f64>,
+    /// 程序最后一次设定的高度。用来区分"我们改的"和"用户拖的"：
+    /// Resized 事件不区分来源，只比 guard_until 会被系统延迟坑到
+    prog_h: Mutex<f64>,
     quitting: AtomicBool,
     shortcut_off: AtomicBool,
     /// 和 WorkBuddy 的钩子对接状态，决定托盘里那个「修复」项出不出现
@@ -123,7 +130,12 @@ fn main() {
             let handle = app.handle().clone();
             let port = start_backend(&handle);
             log(&format!("后端端口 = {port}"));
-            let prefs = Prefs::load();
+            let mut prefs = Prefs::load();
+            // 0.6.4：清掉旧版本留在文件里的 manual_height 脏值，把默认交还给自适应
+            if prefs.migrate() {
+                prefs.save();
+                log("已迁移 prefs：manual_height 归零，恢复默认自适应");
+            }
             let ws = WinState::load();
 
             app.manage(St {
@@ -136,6 +148,7 @@ fn main() {
                 sheet_back: Mutex::new(0.0),
                 guard_until: Mutex::new(Instant::now()),
                 dpr: Mutex::new(1.0),
+                prog_h: Mutex::new(ws.height),
                 quitting: AtomicBool::new(false),
                 shortcut_off: AtomicBool::new(false),
                 hooks: Mutex::new(HookState::default()),
@@ -442,9 +455,12 @@ fn create_window(app: &AppHandle, prefs: &Prefs, ws: &WinState, port: u16) -> ta
                 hide_panel(&w);
             }
         }
-        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+        tauri::WindowEvent::Resized(_) => {
+            // 先认人：这条事件既可能来自我们自己的 set_size，也可能来自用户拖边框
+            note_user_resize(&h);
             persist_bounds(&h);
         }
+        tauri::WindowEvent::Moved(_) => persist_bounds(&h),
         _ => {}
     });
 
@@ -510,6 +526,72 @@ fn logical_rect(w: &WebviewWindow) -> (f64, f64, f64, f64) {
 fn set_rect(w: &WebviewWindow, x: f64, y: f64, width: f64, height: f64) {
     let _ = w.set_size(LogicalSize::new(width.max(MIN_WIDTH), height.max(FOLDED_HEIGHT)));
     let _ = w.set_position(LogicalPosition::new(x, y));
+}
+
+/// 程序自己改窗口：记下这次的高度并进入 400ms 静默期。
+///
+/// 为什么要记 prog_h：`Resized` 事件不区分是谁改的。
+/// 只靠 guard_until 的话，系统把事件延迟到静默期之后才派发，
+/// 就会被误判成"用户拖了"，于是自适应被悄悄关掉 —— 这类误判比漏判更难查。
+fn set_panel_rect(app: &AppHandle, w: &WebviewWindow, x: f64, y: f64, cw: f64, h: f64) {
+    if let Some(st) = app.try_state::<St>() {
+        *st.prog_h.lock().unwrap() = h;
+        *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
+    }
+    set_rect(w, x, y, cw, h);
+}
+
+/// 当前窗口所在显示器的右下角坐标（扣掉 MARGIN）。
+/// 单位和 `logical_rect` 一致：Tauri 的 scale_factor 在这套外壳里恒为 1.0，
+/// 所以外面拿到的 x/y/cw/ch 就是物理像素，这里也按物理像素算。
+fn corner_position(w: &WebviewWindow, cw: f64, h: f64) -> Option<(f64, f64)> {
+    let hwnd = w.hwnd().ok()?.0 as isize;
+    let sf = scale_of(w);
+    let (ax, ay, aw, ah) = sys::work_area(hwnd)?;
+    let (ax, ay, aw, ah) =
+        (ax as f64 / sf, ay as f64 / sf, aw as f64 / sf, ah as f64 / sf);
+    let x = (ax + aw - cw - prefs::MARGIN).max(ax);
+    let y = (ay + ah - h - prefs::MARGIN).max(ay);
+    Some((x, y))
+}
+
+/// 用户手动拖过高度 → 关闭自适应，并把这件事告诉他。
+///
+/// 判定条件三条同时成立才算用户拖的：不是折叠态、不是设置浮层、
+/// 不在程序自己的静默期，且高度与程序最后一次设定的值差了 2px 以上。
+fn note_user_resize(app: &AppHandle) {
+    let Some(st) = app.try_state::<St>() else { return };
+    if st.folded.load(Ordering::Relaxed) || st.sheet.load(Ordering::Relaxed) {
+        return;
+    }
+    if Instant::now() < *st.guard_until.lock().unwrap() {
+        return;
+    }
+    let Some(w) = app.get_webview_window("main") else { return };
+    if w.is_minimized().unwrap_or(false) || !w.is_visible().unwrap_or(false) {
+        return;
+    }
+    let (_, _, _, ch) = logical_rect(&w);
+    let prog_h = *st.prog_h.lock().unwrap();
+    if (ch - prog_h).abs() <= 2.0 {
+        return;
+    }
+
+    let snap;
+    {
+        let mut p = st.prefs.lock().unwrap();
+        if p.manual_height {
+            *st.prog_h.lock().unwrap() = ch;
+            return;
+        }
+        p.manual_height = true;
+        p.save();
+        snap = p.clone();
+    }
+    *st.prog_h.lock().unwrap() = ch;
+    log(&format!("用户手动改高度 → 关闭自适应（h={ch:.0}）"));
+    let _ = app.emit("hud:prefs", &snap);
+    let _ = app.emit("hud:notice", "已改用手动高度：内容变化不再改窗口，设置里可恢复自适应");
 }
 
 fn persist_bounds(app: &AppHandle) {
@@ -587,8 +669,30 @@ fn auto_resize(app: &AppHandle, raw: f64) {
         }
     }
 
-    *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
-    set_rect(&w, x, ny, cw, next);
+    set_panel_rect(app, &w, x, ny, cw, next);
+
+    /*
+     * 顺手把"内容高度"记进 window.json。
+     *
+     * persist_bounds 只在静默期之外才写，程序自己改高度那几次全被它跳过，
+     * 于是文件里留着的还是很久以前那个值 —— 下次启动先按它建一个大窗，
+     * 再等页面量完缩回来，看起来就是"第一次打开下半屏空白"。
+     * 这里主动写一次，下次启动直接按真实内容高度开窗。
+     */
+    {
+        let need_save = {
+            let mut ws = st.ws.lock().unwrap();
+            if (ws.height - next).abs() > 1.0 {
+                ws.height = next;
+                Some(ws.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = need_save {
+            snap.save();
+        }
+    }
 }
 
 fn apply_fold(app: &AppHandle, folded: bool) {
@@ -597,14 +701,28 @@ fn apply_fold(app: &AppHandle, folded: bool) {
     let Some(w) = app.get_webview_window("main") else { return };
     let (x, y, cw, ch) = logical_rect(&w);
     let dpr = *st.dpr.lock().unwrap();
+
     if folded {
-        *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
-        set_rect(&w, x, y, cw, FOLDED_HEIGHT * dpr);
+        let target = FOLDED_HEIGHT * dpr;
+        /*
+         * 折叠时**底边固定**、往上收。
+         *
+         * 旧写法保留顶边（y 不动）往下收，于是折叠条的底边比原窗口高出一大截；
+         * 展开时又按"底边固定"反推 y，等于把整窗往上顶 (原高 - 44) 像素。
+         * 折叠→展开几次，界面就一路飘到屏幕顶上 —— 这就是那个 bug 的来源。
+         * 两端的锚点必须一致，都在底边。
+         */
+        set_panel_rect(app, &w, x, y + ch - target, cw, target);
     } else {
         let back = st.ws.lock().unwrap().height.max(MIN_HEIGHT * dpr);
         let h = if back > FOLDED_HEIGHT * dpr { back } else { HEIGHT * dpr };
-        *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
-        set_rect(&w, x, y + ch - h, cw, h);
+        /*
+         * 展开一律吸回屏幕右下角：折叠条可能已经被拖到任何地方，
+         * 按"用户拖到哪就在哪展开"会让面板出现在奇怪的位置。
+         * 拿不到显示器信息时退回原来的底边固定算法。
+         */
+        let (nx, ny) = corner_position(&w, cw, h).unwrap_or((x, y + ch - h));
+        set_panel_rect(app, &w, nx, ny, cw, h);
         let _ = app.emit("hud:remeasure", ());
     }
 }
@@ -1106,16 +1224,14 @@ fn hud_sheet(app: AppHandle, open: bool) {
                 ny = ay;
             }
         }
-        *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
-        set_rect(&w, x, ny, cw, target);
+        set_panel_rect(&app, &w, x, ny, cw, target);
     } else {
         if !st.sheet.swap(false, Ordering::Relaxed) {
             return;
         }
         let back = *st.sheet_back.lock().unwrap();
         if back > MIN_HEIGHT * dpr {
-            *st.guard_until.lock().unwrap() = Instant::now() + Duration::from_millis(400);
-            set_rect(&w, x, y + ch - back, cw, back);
+            set_panel_rect(&app, &w, x, y + ch - back, cw, back);
         }
         let _ = app.emit("hud:remeasure", ());
     }
@@ -1202,6 +1318,10 @@ fn hud_prefs_reset(app: AppHandle) -> Prefs {
         let st = app.state::<St>();
         let mut p = st.prefs.lock().unwrap();
         *p = Prefs::default();
+        // Prefs::default() 的 schema_version 是 0（那是为了识别老文件），
+        // 但"重置"不是"降级"：把 0 存回文件，下次启动就会当成旧文件再迁移一遍，
+        // 每次都在日志里留一条"已迁移 prefs"，看着像坏了。
+        p.schema_version = prefs::SCHEMA_VERSION;
         p.save();
         snap = p.clone();
     }

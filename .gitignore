@@ -6,8 +6,10 @@ node_modules/
 tauri/target/
 tauri/gen/schemas/
 
-# 仅留本地的文档
+# 仅留本地的文档（内部评估与改动记录，含本机路径，不进仓库）
 docs/开发记录.md
+docs/CLI打卡-可行性评估.md
+docs/改动日志-v0.6.4.md
 
 # 日志与调试产物
 *.log

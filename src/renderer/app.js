@@ -15,7 +15,7 @@ const bridge = window.hud || null;
 const DEFAULT_PREFS = {
   stepCount: 6,
   thinkingLines: 6,
-  blocks: { thinking: true, steps: true, metrics: true, model: true, perm: true },
+  blocks: { thinking: true, steps: true, metrics: true, credit: true, model: true, perm: true },
   shortcut: "Control+Alt+W",
   alwaysOnTop: true,
   manualHeight: false,
@@ -23,6 +23,8 @@ const DEFAULT_PREFS = {
   gate: "risky", // off | risky | all
   gateTimeout: "hold", // hold | deny10 | pass1
   logAsk: "ask", // ask = 退出前弹一次确认；never = 直接退
+  creditSync: false, // 需联网；关着时后端不读凭据、不发任何请求
+  autoSignin: false, // 每日自动领取 100 积分，仅在 creditSync 开启时生效
 };
 
 /** 状态 → 文案与解释。颜色在 CSS 里按状态类名绑定。 */
@@ -88,6 +90,7 @@ const el = {
   permNote: $("perm-note"),
   meta: $("meta"),
   conn: $("conn"),
+  connText: $("conn-text"),
   fold: $("btn-fold"),
   close: $("btn-close"),
   settings: $("btn-settings"),
@@ -102,6 +105,15 @@ const el = {
   blkThinking: $("blk-thinking"),
   blkSteps: $("blk-steps"),
   blkMetrics: $("blk-metrics"),
+  blkCredit: $("blk-credit"),
+  creditLeft: $("credit-left"),
+  creditSignin: $("credit-signin"),
+  creditTip: $("credit-tip"),
+  creditRefresh: $("credit-refresh"),
+  creditClaim: $("credit-claim"),
+  setCreditSync: $("set-credit-sync"),
+  setAutoSignin: $("set-auto-signin"),
+  creditMsg: $("credit-msg"),
 
   sheet: $("sheet"),
   sheetClose: $("sheet-close"),
@@ -112,18 +124,19 @@ const el = {
   chkThinking: $("blk-thinking-c"),
   chkSteps: $("blk-steps-c"),
   chkMetrics: $("blk-metrics-c"),
+  chkCredit: $("blk-credit-c"),
   chkModel: $("blk-model-c"),
   chkPerm: $("blk-perm-c"),
   setOnTop: $("set-ontop"),
   btnKey: $("btn-key"),
   keyMsg: $("key-msg"),
   btnAutoHeight: $("btn-autoheight"),
+  autoMsg: $("autoheight-msg"),
   btnReset: $("btn-reset"),
   setGate: $("set-gate"),
   gateMsg: $("gate-msg"),
   permBlockMsg: $("perm-block-msg"),
   setWait: $("set-timeout"),
-  waitMsg: $("timeout-msg"),
   setLogAsk: $("set-logask"),
   valLogSize: $("val-logsize"),
   btnClearLog: $("btn-clear-log"),
@@ -210,6 +223,8 @@ function applyPrefs(patch) {
   if (patch.gateTimeout === "hold" || patch.gateTimeout === "deny10" || patch.gateTimeout === "pass1") {
     prefs.gateTimeout = patch.gateTimeout;
   }
+  if (typeof patch.creditSync === "boolean") prefs.creditSync = patch.creditSync;
+  if (typeof patch.autoSignin === "boolean") prefs.autoSignin = patch.autoSignin;
   if (patch.shortcutError !== undefined) shortcutError = patch.shortcutError;
 
   applyPrefsToDom();
@@ -233,6 +248,7 @@ function applyPrefsToDom() {
   el.blkThinking.classList.toggle("off", !prefs.blocks.thinking);
   el.blkSteps.classList.toggle("off", !prefs.blocks.steps);
   el.blkMetrics.classList.toggle("off", !prefs.blocks.metrics);
+  el.blkCredit.classList.toggle("off", !prefs.blocks.credit);
   el.perm.classList.toggle("off", !prefs.blocks.perm);
 
   updateModelChip(currentModel);
@@ -262,10 +278,37 @@ function syncSettingsUI() {
   el.chkThinking.checked = !!prefs.blocks.thinking;
   el.chkSteps.checked = !!prefs.blocks.steps;
   el.chkMetrics.checked = !!prefs.blocks.metrics;
+  el.chkCredit.checked = !!prefs.blocks.credit;
   el.chkModel.checked = !!prefs.blocks.model;
   el.chkPerm.checked = !!prefs.blocks.perm;
 
   el.setOnTop.checked = !!prefs.alwaysOnTop;
+
+  if (el.setCreditSync) el.setCreditSync.checked = !!prefs.creditSync;
+  if (el.setAutoSignin) {
+    el.setAutoSignin.checked = !!prefs.autoSignin;
+    // 总开关关着时，"自动领取"没有意义 —— 置灰而不是偷偷生效
+    el.setAutoSignin.disabled = !prefs.creditSync;
+  }
+  if (el.creditMsg) {
+    el.creditMsg.className = "msg explain";
+    el.creditMsg.textContent = prefs.creditSync
+      ? "已开启：面板会直连 WorkBuddy 官方接口查余额与签到，凭据只在内存里用，不落盘、不上传。"
+      : "默认关闭：关着时面板不联网、也不读登录凭据。开启后只直连 WorkBuddy 官方接口查余额和签到，凭据只在内存里用一下，不落盘、不上传。自动领取只在你开着开关、且当天确实还没领时才动手。";
+  }
+
+  // 高度模式：手动拖过就明说，否则用户不知道为什么内容变短窗口不变
+  if (el.autoMsg) {
+    if (prefs.manualHeight) {
+      el.autoMsg.textContent =
+        "当前：手动高度（你拖过一次）。内容再变化窗口也不会自己动了，点上面的按钮交还给自适应。";
+      el.autoMsg.className = "hint warn";
+    } else {
+      el.autoMsg.textContent =
+        "当前：自适应。显示哪些区块，窗口就有多高；手动拖过一次后会自动切换到手动模式。";
+      el.autoMsg.className = "msg explain";
+    }
+  }
   if (document.activeElement !== el.setGate) el.setGate.value = prefs.gate;
   if (el.setWait && document.activeElement !== el.setWait) el.setWait.value = prefs.gateTimeout;
   if (el.setLogAsk) el.setLogAsk.checked = prefs.logAsk !== "never";
@@ -285,6 +328,21 @@ function queueSave() {
   saveTimer = setTimeout(flushSave, 100);
 }
 
+/**
+ * 立刻落盘，不等 100ms 防抖。
+ *
+ * 积分开关必须走这条：后端是"读文件判断开没开"的，
+ * 如果我这边刚勾上就去请求刷新，而文件还是旧的 false，
+ * 后端会老老实实回一句"未开启"，看起来像开关没生效。
+ */
+async function saveNow() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await flushSave();
+}
+
 async function flushSave() {
   saveTimer = null;
   const payload = {
@@ -296,6 +354,8 @@ async function flushSave() {
     gate: prefs.gate,
     gateTimeout: prefs.gateTimeout,
     logAsk: prefs.logAsk,
+    creditSync: !!prefs.creditSync,
+    autoSignin: !!prefs.autoSignin,
   };
 
   if (bridge && bridge.prefs && typeof bridge.prefs.set === "function") {
@@ -787,6 +847,9 @@ function render(snap) {
   if (!snap) return;
   cached = snap;
 
+  // 积分与"看哪个会话"无关，任何分支都要刷一遍
+  renderCredit(snap.creditInfo);
+
   // 先决定"看谁"：固定的实时会话 → 固定的老任务 → 服务端选中的会话 → 全空闲
   const picked = pickSession(snap);
   const pinnedTask = picked ? null : findPinnedTask(snap);
@@ -806,6 +869,12 @@ function render(snap) {
     } else {
       el.perm.classList.add("hidden");
     }
+    /*
+     * 这条分支以前直接 return，不重新量高度：
+     * 任务一结束、会话列表清空，窗口就停在最后一次的高个子状态，
+     * 留下半屏空白。空闲也是一种布局，得跟着量。
+     */
+    scheduleMeasure();
     return;
   }
 
@@ -1195,14 +1264,11 @@ function renderGateHint() {
     }
   }
 
-  if (el.waitMsg) {
-    const wait = {
-      hold: "没人点就一直等，上限 60 分钟；到点按「拒绝」处理 —— 宁可这一步失败，也不会趁你没看见把危险操作放过去。适合挂机或睡觉时用。",
-      deny10: "等 10 分钟还没人点，就拒绝这一步，任务会收到失败，等你回来重跑。",
-      pass1: "等 1 分钟还没人点就放行，交回 WorkBuddy 自己判断。这是旧行为，挂机时不要选。",
-    };
-    el.waitMsg.textContent = wait[prefs.gateTimeout] || wait.hold;
-  }
+  /*
+   * 这里原来还有一段"无人应答会怎样/退出后会怎样"的说明文字。
+   * 0.6.4 按用户要求删掉：下拉框里的选项本身已经把结果写清楚了，
+   * 再配两段解释只是把设置面板撑长。
+   */
 }
 
 /** 把结论送回本地服务；失败要让按钮恢复可点，不能把界面锁死 */
@@ -1356,12 +1422,225 @@ if (el.btnClearLog) {
   });
 }
 
+/* ---------------- 积分 ----------------
+ * 数据来自后端快照的 creditInfo（字段白名单），四态：
+ *   未开启 / 查询中 / 未连接（或这次没更新） / 正常
+ *
+ * 最重要的一条：**失败绝不能说成"未领取"**。
+ * 拿不到数据就老实写"未连接"，否则你会去点一个注定失败的按钮，
+ * 还以为今天真没领到，白等一天。
+ */
+
+function fmtCount(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toLocaleString("zh-CN") : "—";
+}
+
+/** 正在领取时锁住重绘：否则一次快照推送就把"领取中…"盖回"未领取"，看起来像没点上 */
+let creditBusy = false;
+/** 当前是否允许点那一格补领（由 renderCredit 决定，点击处只读这个） */
+let creditCanClaim = false;
+
+function renderCredit(info) {
+  if (!el.blkCredit || !el.creditLeft) return;
+  if (creditBusy) return;
+  const c = info || { enabled: false, state: "disabled" };
+
+  el.creditLeft.classList.remove("pending", "ok", "wait", "err");
+  el.creditSignin.classList.remove("pending", "ok", "wait", "err");
+  el.creditClaim.classList.remove("can-claim");
+  el.creditClaim.setAttribute("aria-disabled", "true");
+  creditCanClaim = false;
+  el.creditClaim.title = "";
+
+  /* 1) 开关没开：两格空着，并说明去哪儿开 */
+  if (!c.enabled || c.state === "disabled") {
+    el.creditLeft.textContent = "—";
+    el.creditSignin.textContent = "—";
+    el.creditLeft.classList.add("pending");
+    el.creditSignin.classList.add("pending");
+    el.creditTip.textContent = "未开启";
+    el.creditTip.className = "muted";
+    el.creditRefresh.classList.add("hidden");
+    const t = "在设置里勾选「查询积分余额与签到状态」后才显示";
+    el.creditLeft.title = t;
+    el.creditSignin.title = t;
+    return;
+  }
+
+  el.creditRefresh.classList.remove("hidden");
+
+  /* 2) 第一次查询还没回来 */
+  if (c.state === "loading") {
+    el.creditLeft.textContent = "…";
+    el.creditSignin.textContent = "…";
+    el.creditLeft.classList.add("pending");
+    el.creditSignin.classList.add("pending");
+    el.creditTip.textContent = "查询中";
+    el.creditTip.className = "muted";
+    el.creditLeft.title = "正在读取余额与签到状态";
+    el.creditSignin.title = el.creditLeft.title;
+    return;
+  }
+
+  const hasData = c.balanceLeft !== null || c.todayCheckedIn !== null;
+
+  /* 3) 从来没成功过：未连接。这里的措辞尤其重要 —— 不能写"未领取" */
+  if (!hasData) {
+    el.creditLeft.textContent = "—";
+    el.creditSignin.textContent = "—";
+    el.creditLeft.classList.add("err");
+    el.creditSignin.classList.add("err");
+    el.creditTip.textContent = "未连接";
+    el.creditTip.className = "muted";
+    const why = c.reason || "拿不到数据，请确认 WorkBuddy 已登录";
+    el.creditLeft.title = why;
+    el.creditSignin.title = why;
+    return;
+  }
+
+  /* 4) 有数据：余额 + 签到状态 */
+  el.creditLeft.textContent = c.balanceLeft === null ? "—" : fmtCount(c.balanceLeft);
+  el.creditLeft.title =
+    c.balanceExact !== null && Number(c.balanceExact) !== Number(c.balanceLeft)
+      ? "剩余总点数（精确 " + c.balanceExact + "，显示取整）"
+      : "剩余总点数";
+
+  if (c.todayCheckedIn === true) {
+    el.creditSignin.textContent = "● 已领取" + (c.todayCredit ? " +" + c.todayCredit : "");
+    el.creditSignin.classList.add("ok");
+    el.creditSignin.title =
+      "今天领过了" +
+      (c.streakDays ? "，已连续 " + c.streakDays + " 天" : "") +
+      "。明天 0 点后可再领。";
+  } else if (c.todayCheckedIn === false) {
+    el.creditSignin.textContent = "○ 未领取";
+    el.creditSignin.classList.add("wait");
+    el.creditSignin.title = c.autoSignin
+      ? "已开启自动领取，面板会自己补上；也可以点这里立刻领。"
+      : "点这里立刻领取今日的 100 积分。";
+    if (c.state !== "error") {
+      creditCanClaim = true;
+      el.creditClaim.setAttribute("aria-disabled", "false");
+      el.creditClaim.classList.add("can-claim");
+      el.creditClaim.title = "点一下领取今日 100 积分";
+    }
+  } else {
+    el.creditSignin.textContent = "—";
+    el.creditSignin.classList.add("err");
+  }
+
+  /* 右上角：多久之前的数据。失败或过期就明说，别让人以为是最新的 */
+  if (c.state === "error" || c.stale) {
+    el.creditTip.textContent = "未更新";
+    el.creditTip.className = "muted wait-text";
+    el.creditTip.title = c.reason || "这次没取到新数据，显示的是上一次的结果";
+  } else {
+    el.creditTip.textContent = timeAgo(c.updatedAt);
+    el.creditTip.className = "muted";
+    el.creditTip.title = "余额每 30 分钟更新一次";
+  }
+}
+
+/** 手动刷新 / 手动补领：两头都只打本机端点，令牌永远不出后端 */
+async function postLocal(url) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    return await res.json();
+  } catch (_) {
+    return null;
+  }
+}
+
+if (el.creditRefresh) {
+  el.creditRefresh.addEventListener("click", async () => {
+    if (el.creditRefresh.disabled) return;
+    el.creditRefresh.disabled = true;
+    el.creditRefresh.textContent = "…";
+    try {
+      const r = await postLocal("/api/credit/refresh");
+      if (r && r.creditInfo) renderCredit(r.creditInfo);
+      else if (r && r.ok === false) el.creditTip.textContent = "刷新失败";
+    } finally {
+      el.creditRefresh.disabled = false;
+      el.creditRefresh.textContent = "刷新";
+    }
+  });
+}
+
+if (el.creditClaim) {
+  const doClaim = async () => {
+    if (!creditCanClaim || creditBusy) return;
+    creditBusy = true;
+    creditCanClaim = false;
+    el.creditClaim.classList.remove("can-claim");
+    el.creditClaim.setAttribute("aria-disabled", "true");
+    const before = el.creditSignin.textContent;
+    el.creditSignin.textContent = "领取中…";
+    let r = null;
+    try {
+      r = await postLocal("/api/credit/claim");
+    } catch (_) {
+      r = null;
+    }
+    creditBusy = false;
+    if (r && r.creditInfo) {
+      renderCredit(r.creditInfo);
+    } else {
+      el.creditSignin.textContent = before;
+      el.creditTip.textContent = "领取失败";
+    }
+    if (r && r.ok === false) {
+      // 失败要看得见：说清原因，不能静默装作已领
+      el.creditTip.textContent = "领取失败";
+      el.creditTip.title = r.reason || "稍后再试";
+    }
+  };
+
+  el.creditClaim.addEventListener("click", doClaim);
+  // 键盘也能用：它是 role=button 的 tabindex 元素
+  el.creditClaim.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      doClaim();
+    }
+  });
+}
+
 /* ---------------- 连接 ---------------- */
 
+/**
+ * 连接灯三态。以前只有"绿/红"两色且没有文字，
+ * 网络抖一下整个灯变红、你必须悬停才知道发生了什么。
+ * 现在：断开先宽限 5 秒显示"重连中"，5 秒后仍没恢复才算"已断开"。
+ */
+let connTimer = null;
+
+function setConn(state, label) {
+  if (!el.conn) return;
+  el.conn.className = "conn" + (state === "ok" ? "" : " " + state);
+  el.connText.textContent = label;
+  el.conn.title =
+    state === "ok"
+      ? "已连接：本地服务在线，数据实时刷新"
+      : state === "off"
+        ? "已断开：重连多次失败，面板停在上一次的数据上"
+        : "重连中：连接断了一下，正在自动重试";
+}
+
 function connect() {
+  setConn("wait", "连接中");
   const es = new EventSource("/api/events");
   es.onopen = () => {
-    el.conn.className = "conn";
+    if (connTimer) {
+      clearTimeout(connTimer);
+      connTimer = null;
+    }
+    setConn("ok", "已连接");
   };
   es.onmessage = (e) => {
     try {
@@ -1371,7 +1650,13 @@ function connect() {
     }
   };
   es.onerror = () => {
-    el.conn.className = "conn off";
+    if (el.conn.classList.contains("off")) return;
+    setConn("wait", "重连中");
+    if (connTimer) return;
+    connTimer = setTimeout(() => {
+      connTimer = null;
+      setConn("off", "已断开");
+    }, 5000);
   };
 }
 
@@ -1507,8 +1792,36 @@ function bindBlockCheckbox(node, key) {
 bindBlockCheckbox(el.chkThinking, "thinking");
 bindBlockCheckbox(el.chkSteps, "steps");
 bindBlockCheckbox(el.chkMetrics, "metrics");
+bindBlockCheckbox(el.chkCredit, "credit");
 bindBlockCheckbox(el.chkModel, "model");
 bindBlockCheckbox(el.chkPerm, "perm");
+
+/**
+ * 积分总开关。勾上就立刻查一次，不让人干等调度的一分钟节拍。
+ *
+ * 顺序很重要：先 saveNow 把开关写进 prefs.json，再请求刷新。
+ * 反过来的话后端读到的还是旧的 false，会直接回"未开启"。
+ */
+if (el.setCreditSync) {
+  el.setCreditSync.addEventListener("change", async () => {
+    prefs.creditSync = el.setCreditSync.checked;
+    if (!prefs.creditSync) prefs.autoSignin = false; // 总开关关了，子开关不该还亮着
+    syncSettingsUI();
+    await saveNow();
+    const r = await postLocal("/api/credit/refresh");
+    if (r && r.creditInfo) renderCredit(r.creditInfo);
+  });
+}
+
+if (el.setAutoSignin) {
+  el.setAutoSignin.addEventListener("change", async () => {
+    prefs.autoSignin = el.setAutoSignin.checked;
+    await saveNow();
+    // 刚打开自动领取：后台那次 tick 最多一分钟，这里推它一下
+    const r = await postLocal("/api/credit/refresh");
+    if (r && r.creditInfo) renderCredit(r.creditInfo);
+  });
+}
 
 // 置顶
 el.setOnTop.addEventListener("change", () => {
@@ -1786,6 +2099,7 @@ setInterval(() => {
   }
 
   hydrateDots(); // 图例里那几个写死的圆点也换成 SVG
+  renderCredit(null); // 首帧先摆"未开启"，真实状态等第一份快照
   connect();
   lastSentHeight = 0;
   scheduleMeasure();

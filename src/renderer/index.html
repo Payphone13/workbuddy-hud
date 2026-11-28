@@ -71,6 +71,31 @@
             </div>
           </section>
 
+          <!--
+            积分区块：单独成行，放在指标（三卡）之下、确认卡之上。
+            需在设置里手动开启；四态由 app.js 的 renderCredit() 决定：
+            未开启 / 查询中 / 未连接（或这次没更新） / 正常。
+          -->
+          <section id="blk-credit" class="block credit">
+            <div class="block-hd">
+              <span>积分</span>
+              <span class="credit-hd-r">
+                <span id="credit-tip" class="muted">未开启</span>
+                <button id="credit-refresh" class="mini credit-refresh hidden" type="button" title="立即刷新余额与签到状态">刷新</button>
+              </span>
+            </div>
+            <div class="credit-row">
+              <div class="credit-item">
+                <span class="credit-k">剩余总点数</span>
+                <span id="credit-left" class="credit-v">—</span>
+              </div>
+              <div id="credit-claim" class="credit-item credit-hit" role="button" tabindex="0" aria-disabled="true">
+                <span class="credit-k">每日积分</span>
+                <span id="credit-signin" class="credit-v">—</span>
+              </div>
+            </div>
+          </section>
+
           <section id="perm" class="perm hidden">
             <div class="perm-hd">
               <span id="perm-title">需要你确认</span>
@@ -91,8 +116,14 @@
     </div>
 
     <footer class="ft">
-      <span id="meta" class="muted"></span>
-      <span id="conn" class="conn" title="本地服务连接状态">●</span>
+      <span id="meta" class="meta"></span>
+      <!--
+        连接灯：颜色 + 文字双编码。以前只有一个圆点，含义只能靠悬停看，
+        鼠标不动就永远不知道它到底是"正常"还是"断了"。
+      -->
+      <span id="conn" class="conn wait" title="面板与本地服务的连接状态"
+        ><i class="conn-dot" aria-hidden="true"></i><span id="conn-text">连接中</span></span
+      >
     </footer>
 
     <!-- 会话选择下拉：挂在 app 上而非内容区，避免被滚动区裁剪 -->
@@ -130,6 +161,7 @@
             <label class="chk"><input id="blk-thinking-c" type="checkbox" /> 思考</label>
             <label class="chk"><input id="blk-steps-c" type="checkbox" /> 步骤</label>
             <label class="chk"><input id="blk-metrics-c" type="checkbox" /> 指标</label>
+            <label class="chk"><input id="blk-credit-c" type="checkbox" /> 积分</label>
             <label class="chk"><input id="blk-model-c" type="checkbox" /> 模型</label>
             <label class="chk" title="勾选＝弹卡并拦截；取消＝不弹卡，也不再拦截任何操作"><input id="blk-perm-c" type="checkbox" /> 确认卡（拦截）</label>
           </div>
@@ -155,8 +187,6 @@
               <option value="pass1">等 1 分钟，到点自动放行（旧行为）</option>
             </select>
           </div>
-          <div id="timeout-msg" class="msg explain"></div>
-          <div class="msg sep">退出后会发生什么：点 × 只是收进托盘，面板还在后台跑，上面这套规则继续生效；从托盘选「退出…」之后面板就关了，没有任何人替你把关 —— WorkBuddy 完全按它自己设置里的权限模式走。它要是「跳过确认」，命令会直接执行，不会再问你一句。</div>
         </div>
 
         <div class="grp">
@@ -168,6 +198,14 @@
           </div>
           <div id="key-msg" class="msg"></div>
           <button id="btn-autoheight" class="wide">恢复自适应高度</button>
+          <div id="autoheight-msg" class="msg explain">默认跟随内容自适应：显示哪些区块，窗口就有多高。你手动拖过一次高度后自动关闭自适应，以你拖的为准。</div>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">积分（需联网）</div>
+          <label class="chk wide-chk"><input id="set-credit-sync" type="checkbox" /> 查询积分余额与签到状态</label>
+          <label class="chk wide-chk"><input id="set-auto-signin" type="checkbox" /> 每天自动领取 100 积分</label>
+          <div id="credit-msg" class="msg explain">默认关闭：关着时面板不联网、也不读登录凭据。开启后只直连 WorkBuddy 官方接口查余额和签到，凭据只在内存里用一下，不落盘、不上传。自动领取只在你开着开关、且当天确实还没领时才动手。</div>
         </div>
 
         <div class="grp">
