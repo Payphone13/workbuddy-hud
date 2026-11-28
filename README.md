@@ -21,9 +21,22 @@ WorkBuddy 客户端本身就能看思考过程、执行步骤和权限弹窗，�
 
 ## 🚀 怎么用
 
-1. 打开右侧 [Releases](https://github.com/Payphone13/workbuddy-hud/releases)，下载 `WorkBuddy面板-x.x.x-win-x64.zip` 并解压。
-2. 双击 `WorkBuddy面板.exe`。首次运行如果 Windows 弹出保护提示，点“更多信息”，再点“仍要运行”。
-3. 首次打开会自动往 WorkBuddy 写入钩子。按气泡提示完全退出并重开一次 WorkBuddy，之后发任务就能在面板上看到实时状态。
+### 方式一：一行命令下载（推荐，国内免翻墙）
+
+直接把下面这行命令发给 **WorkBuddy** 让它执行，或者粘贴到 Windows **PowerShell** 中回车，会自动下载最新版并解压到桌面：
+
+```powershell
+$u="https://github.com/Payphone13/workbuddy-hud/releases/latest/download/workbuddy-hud-win-x64.zip"; $z="$env:TEMP\wb-hud.zip"; $d="$env:USERPROFILE\Desktop"; foreach($p in "https://ghfast.top/","https://gh-proxy.com/",""){try{Invoke-WebRequest "$p$u" -OutFile $z -TimeoutSec 20; if((Get-Item $z).Length -gt 100KB){break}}catch{}}; Expand-Archive $z $d -Force; Remove-Item $z -ErrorAction SilentlyContinue; explorer (Get-ChildItem $d -Directory -Filter "WorkBuddy面板*" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+```
+
+### 方式二：手动下载
+
+1. 打开右侧 [Releases](https://github.com/Payphone13/workbuddy-hud/releases)，下载 `workbuddy-hud-win-x64.zip` 并解压。
+
+### 启动步骤
+
+1. 双击文件夹里的 `WorkBuddy面板.exe`。首次运行如果 Windows 弹出保护提示，点“更多信息”，再点“仍要运行”。
+2. 首次打开会自动往 WorkBuddy 写入钩子。按气泡提示完全退出并重开一次 WorkBuddy，之后发任务就能在面板上看到实时状态。
 
 默认用 `Ctrl + Alt + W` 显示或隐藏窗口，快捷键可以在设置里改。点窗口关闭按钮只是收进右下角托盘，程序还在后台运行；想彻底退出，右键托盘图标选“退出”。
 
