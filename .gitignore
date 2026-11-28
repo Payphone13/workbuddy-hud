@@ -10,6 +10,7 @@ tauri/gen/schemas/
 docs/开发记录.md
 docs/CLI打卡-可行性评估.md
 docs/改动日志-v0.6.4.md
+docs/改动日志-v0.6.5.md
 
 # 日志与调试产物
 *.log

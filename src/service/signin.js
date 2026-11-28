@@ -18,9 +18,10 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execFileSync } = require("child_process");
 
 const { HUD_DIR } = require("./config");
+const log = require("./log");
 
 const PREFS_FILE = path.join(HUD_DIR, "prefs.json");
 const HELPER_FILE = path.join(__dirname, "auth-helper.js");
@@ -115,24 +116,36 @@ const AUTH_CANDIDATES = [
  */
 async function readAuthFile() {
   const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  const tried = [];
   for (const rel of AUTH_CANDIDATES) {
     const p = path.join(local, rel);
     for (let i = 0; i < 3; i++) {
       try {
-        return { data: JSON.parse(fs.readFileSync(p, "utf8")) };
+        const data = JSON.parse(fs.readFileSync(p, "utf8"));
+        log.credit("凭据命中：" + p);
+        return { data };
       } catch (e) {
-        if (e.code === "ENOENT") break; // 这个候选不存在，换下一个
+        if (e.code === "ENOENT") {
+          tried.push(p + "（不存在）");
+          break; // 这个候选不存在，换下一个
+        }
         if (e.code === "EPERM" || e.code === "EBUSY" || e.code === "EACCES") {
           if (i < 2) {
+            log.credit("凭据文件被占用，2 秒后重试：" + p + "（" + e.code + "）");
             await new Promise((r) => setTimeout(r, 2000));
             continue;
           }
+          log.credit("凭据文件持续被占用（" + e.code + "）：" + p);
           return { error: "凭据文件被占用" };
         }
-        return { error: "凭据文件读不了" };
+        // JSON 解析失败也走这里：客户端写了半截文件时会出现
+        log.credit("凭据读取失败（" + (e.code || e.name) + "）：" + p + " → " + e.message);
+        tried.push(p + "（" + (e.code || e.name) + "）");
+        break;
       }
     }
   }
+  log.credit("未找到可用凭据，已尝试：\n  " + tried.join("\n  "));
   return { error: "未找到凭据（客户端可能未登录）" };
 }
 
@@ -145,27 +158,236 @@ function pickEdition(auth) {
   return { exeName: "WorkBuddy.exe", endpoint: "https://copilot.tencent.com" };
 }
 
-/** Node 没有 winreg，固定路径覆盖 95% 场景；找不到就判"未安装" */
-function findExe(exeName) {
-  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-  const bases = [
-    path.join("C:\\Program Files", "WorkBuddy"),
-    path.join("C:\\Program Files (x86)", "WorkBuddy"),
-    path.join(local, "Programs", "WorkBuddy"),
-  ];
-  for (const b of bases) {
-    const p = path.join(b, exeName);
+/* ---------------- 定位客户端主程序 ---------------- */
+
+/**
+ * 0.6.4 之前只查三个固定目录：
+ *   C:\Program Files\WorkBuddy、C:\Program Files (x86)\WorkBuddy、
+ *   %LOCALAPPDATA%\Programs\WorkBuddy
+ *
+ * 我这边是默认装在 C 盘 Program Files，所以一路顺畅；用户机器只要
+ * 装在 D 盘、或安装目录名不是 "WorkBuddy"、或是 per-user 的
+ * `%LOCALAPPDATA%\Programs\workbuddy` 小写形态，就直接判"未找到客户端程序"，
+ * 界面显示"未连接" —— 而这台机器上 WorkBuddy 明明装得好好的。
+ *
+ * 0.6.5 改成四层搜索，全部只在首次调用时做一遍，结果进缓存：
+ *   1. 环境变量给出的标准安装位（含各盘符）
+ *   2. 安装根目录下名字含 workbuddy 的子目录
+ *   3. 注册表卸载项里的 InstallLocation / DisplayIcon
+ *   4. 全部失败则把尝试过的路径写进日志
+ */
+
+let exeCache = null;
+
+function isFile(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+function dedupe(list) {
+  const seen = new Set();
+  const out = [];
+  for (const p of list) {
+    if (!p) continue;
+    const k = p.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(p);
+  }
+  return out;
+}
+
+let driveList = null;
+/**
+ * 只查 C/D/E 三个盘。
+ *
+ * 不遍历 C..Z：空的读卡器槽或光驱在被 stat 时可能挂起好几秒，
+ * 而"客户端装在 F 盘以后"的概率极低 —— 那种情况由注册表那一层兜住。
+ * 这个函数只跑一次，结果缓存到进程结束。
+ */
+function drives() {
+  if (driveList) return driveList;
+  const out = [];
+  for (const c of ["C", "D", "E"]) {
+    const d = c + ":\\";
     try {
-      if (fs.statSync(p).isFile()) return { path: p };
+      if (fs.existsSync(d)) out.push(d);
     } catch (_) {
-      /* 继续找 */
+      /* 空的读卡器槽会抛，跳过 */
     }
   }
+  driveList = out;
+  return out;
+}
+
+function standardPlaces(exeName) {
+  const out = [];
+  const roots = [
+    process.env.PROGRAMFILES,
+    process.env["PROGRAMFILES(X86)"],
+    process.env.ProgramW6432,
+  ].filter(Boolean);
+  for (const r of roots) out.push(path.join(r, "WorkBuddy", exeName));
+
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  out.push(path.join(local, "Programs", "WorkBuddy", exeName));
+  out.push(path.join(local, "WorkBuddy", exeName));
+
+  // 装在别的盘的情况：D:\Program Files\WorkBuddy、D:\WorkBuddy……
+  for (const d of drives()) {
+    out.push(path.join(d, "Program Files", "WorkBuddy", exeName));
+    out.push(path.join(d, "Program Files (x86)", "WorkBuddy", exeName));
+    out.push(path.join(d, "Programs", "WorkBuddy", exeName));
+    out.push(path.join(d, "WorkBuddy", exeName));
+  }
+  return dedupe(out);
+}
+
+/** 安装根目录下，目录名只要含 workbuddy 就进去看一眼（大小写不限） */
+function scanRoots(exeName) {
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  const roots = [
+    process.env.PROGRAMFILES,
+    process.env["PROGRAMFILES(X86)"],
+    path.join(local, "Programs"),
+  ].filter(Boolean);
+  const out = [];
+  for (const r of roots) {
+    let names = [];
+    try {
+      names = fs.readdirSync(r);
+    } catch (_) {
+      continue;
+    }
+    for (const n of names) {
+      if (!/workbuddy/i.test(n)) continue;
+      out.push(path.join(r, n, exeName));
+    }
+  }
+  return dedupe(out);
+}
+
+/**
+ * 读注册表的卸载项。
+ * Node 没有 winreg，这里 shell 出去调 reg.exe —— 每个 Windows 都有。
+ * 输出在中文系统上是 GBK，用 latin1 接：路径是 ASCII，不会因此变形。
+ */
+function regPlaces(exeName) {
+  const keys = [
+    "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+  ];
+  const out = [];
+  for (const k of keys) {
+    let txt = "";
+    try {
+      const buf = execFileSync("reg", ["query", k, "/s", "/f", "WorkBuddy"], {
+        encoding: "buffer",
+        timeout: 4000,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      txt = buf.toString("latin1");
+    } catch (_) {
+      continue; // 键不存在或没有匹配项
+    }
+    for (const m of txt.matchAll(/InstallLocation\s+REG_\w+\s+(.+)/g)) {
+      const v = m[1].trim().replace(/^"|"$/g, "");
+      if (v) out.push(path.join(v, exeName));
+    }
+    for (const m of txt.matchAll(/DisplayIcon\s+REG_\w+\s+(.+)/g)) {
+      const v = m[1].trim().replace(/^"|"$/g, "").replace(/,\d+$/, "");
+      if (/\.exe$/i.test(v)) out.push(v);
+    }
+  }
+  return dedupe(out);
+}
+
+/**
+ * 最后一道：从正在运行的进程取路径。
+ *
+ * 覆盖"绿色版 / 解压版 / 改了目录名 / 没有注册表项"这些前面都抓不到的情况。
+ * 用户开着面板时客户端必然在运行，所以这条命中率不低。
+ * 代价是一次 PowerShell 冷启动（1~2 秒），因此放在最后一层。
+ */
+function processPlaces(exeName) {
+  const procName = exeName.replace(/\.exe$/i, "");
+  try {
+    const buf = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-Process -Name '" + procName + "' -ErrorAction SilentlyContinue | " +
+          "Select-Object -First 1 -ExpandProperty Path)",
+      ],
+      {
+        encoding: "buffer",
+        timeout: 6000,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      }
+    );
+    // PowerShell 的输出带 BOM，路径为 ASCII，用 utf8 读并去空白即可
+    const p = buf.toString("utf8").replace(/^\uFEFF/, "").trim();
+    if (p && /\.exe$/i.test(p)) return [p];
+  } catch (_) {
+    /* 没有这个进程，或 PowerShell 不可用 */
+  }
+  return [];
+}
+
+function locateExe(exeName) {
+  const tried = [];
+  /*
+   * 顺序按"命中率 × 代价"排：
+   * 前两层是纯 stat/readdir，毫秒级；
+   * 进程层要拉一次 PowerShell（1~2 秒），但最可靠 —— 用户开着面板时客户端必然在运行；
+   * 注册表层放最后：它依赖安装器写过注册表，绿色版没有，且 reg.exe 可能被安全软件拦截。
+   *
+   * 必须惰性求值：写成 `[label, list]` 的数组字面量会把四层全部先算一遍，
+   * 于是第一层命中时也照样付 PowerShell 与 reg.exe 的代价。实测能拖慢首次刷新 0.5~3 秒。
+   */
+  const layers = [
+    ["常见安装位置", () => standardPlaces(exeName)],
+    ["目录名含 workbuddy", () => scanRoots(exeName)],
+    ["运行中的进程", () => processPlaces(exeName)],
+    ["注册表卸载项", () => regPlaces(exeName)],
+  ];
+  for (const [label, collect] of layers) {
+    for (const p of collect()) {
+      if (isFile(p)) {
+        log.credit("客户端命中（" + label + "）：" + p);
+        return { path: p };
+      }
+      tried.push(label + " → " + p);
+    }
+  }
+  log.credit(
+    "未找到客户端 " + exeName + "，共尝试 " + tried.length + " 个位置：\n  " +
+      tried.slice(0, 60).join("\n  ") +
+      (tried.length > 60 ? "\n  …还有 " + (tried.length - 60) + " 个" : "")
+  );
   return { error: "未找到客户端程序" };
+}
+
+/** 结果缓存到进程结束：装完客户端不用重启面板，但也不必每 30 分钟扫一次盘 */
+function findExe(exeName) {
+  if (exeCache && exeCache.exeName === exeName) return exeCache.result;
+  const result = locateExe(exeName);
+  // 找不到也缓存，否则每轮刷新都要扫一遍所有盘
+  exeCache = { exeName, result };
+  return result;
 }
 
 function runHelper(exe, request) {
   return new Promise((resolve) => {
+    const started = Date.now();
     let child;
     try {
       child = spawn(exe, ["-e", fs.readFileSync(HELPER_FILE, "utf8")], {
@@ -173,15 +395,22 @@ function runHelper(exe, request) {
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
-    } catch (_) {
+    } catch (e) {
+      log.credit("拉起解密进程失败：" + (e && e.message));
       return resolve({ error: "客户端无法启动" });
     }
+    log.credit("拉起解密进程 pid=" + (child.pid || "?") + "，exe=" + exe);
     let out = "";
     let done = false;
     const finish = (r) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      log.credit(
+        "解密进程结束：" +
+          (r.error ? "失败「" + r.error + "」" : "成功") +
+          "，耗时 " + (Date.now() - started) + "ms"
+      );
       resolve(r);
     };
     const timer = setTimeout(() => {
@@ -197,7 +426,9 @@ function runHelper(exe, request) {
       if (out.length < 65536) out += d.toString("utf8");
     });
     child.stderr.on("data", () => {}); // 不收集：里面可能带路径，没有排查价值
-    child.on("error", () => finish({ error: "客户端无法启动" }));
+    child.on("error", (e) =>
+      finish({ error: "客户端无法启动" + (e && e.code ? "（" + e.code + "）" : "") })
+    );
     child.on("close", () => {
       let reply = null;
       try {
@@ -247,6 +478,11 @@ async function ensureCredentials() {
   if (!A.accessToken || !A.accessToken.$wbEncrypted) throw new Error("凭据格式异常");
 
   const ed = pickEdition(A);
+  log.credit(
+    "凭据已读到：uid=" + log.mask(uid) +
+      " domain=" + (A.domain || "（空）") +
+      " → 客户端 " + ed.exeName + "，端点 " + ed.endpoint
+  );
   const ex = findExe(ed.exeName);
   if (ex.error) throw new Error(ex.error);
 
@@ -285,6 +521,9 @@ function headersFor(c) {
  * 传 "{}" 才是空对象 —— 两者服务端行为不同，别图省事统一。
  */
 async function post(url, headers, body) {
+  // 日志里只留路径，域名单独记一次就够，避免每行都拖一串前缀
+  const where = url.replace(/^https?:\/\/[^/]+/, "");
+  const t0 = Date.now();
   const init = { method: "POST", headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT) };
   if (body !== undefined) init.body = body;
   try {
@@ -296,8 +535,17 @@ async function post(url, headers, body) {
     } catch (_) {
       /* 非 JSON 响应按失败处理，不猜 */
     }
+    const code = json && json.code;
+    log.net(
+      "POST " + where + " → " + res.status +
+        "（" + (Date.now() - t0) + "ms）" +
+        (code !== undefined && code !== null ? " code=" + code : "") +
+        (json === null && text ? " 响应非 JSON，前 120 字符：" + text.slice(0, 120) : "")
+    );
     return { status: res.status, json };
-  } catch (_) {
+  } catch (e) {
+    const why = e && e.name === "TimeoutError" ? "超时（" + REQUEST_TIMEOUT + "ms）" : (e && e.message) || "未知";
+    log.net("POST " + where + " 失败：" + why + "（" + (Date.now() - t0) + "ms）");
     return { error: "请求超时或网络不通" };
   }
 }
@@ -365,6 +613,7 @@ async function refresh() {
     try {
       const c = await ensureCredentials();
       const H = headersFor(c);
+      log.credit("开始刷新：端点 " + c.endpoint);
 
       const st = await post(c.endpoint + "/v2/billing/meter/checkin-activity-status", H);
       if (st.status === 401 || st.status === 403) {
@@ -403,9 +652,16 @@ async function refresh() {
       cache.reason = "";
       cache.updatedAt = Date.now();
       cache.day = localDay();
+      log.credit(
+        "刷新成功：余额 " + (cache.balanceLeft === null ? "未知" : cache.balanceLeft) +
+          "，今日" + (cache.todayCheckedIn ? "已签" : "未签") +
+          "，今日积分 " + (cache.todayCredit === null ? "未知" : cache.todayCredit) +
+          "，连签 " + (cache.streakDays === null ? "未知" : cache.streakDays) + " 天"
+      );
     } catch (e) {
       cache.state = "error";
       cache.reason = (e && e.message) || "查询失败";
+      log.credit("刷新失败：" + cache.reason);
       // 有上一次的成功数据就不动它，只把状态标成"这次没更新"
       if (cache.updatedAt) cache.stale = true;
       else {
@@ -472,6 +728,7 @@ async function claim() {
       cache.updatedAt = Date.now();
       claimAt = Date.now();
       notify();
+      log.credit("领取成功（或今日已领，幂等通过）");
       // 余额会变，顺手刷一次；失败也不影响"已领取"这个结论
       setTimeout(() => {
         refresh().catch(() => {});
@@ -480,6 +737,7 @@ async function claim() {
     } catch (e) {
       claimAt = Date.now();
       cache.reason = (e && e.message) || "领取失败";
+      log.credit("领取失败：" + cache.reason);
       notify();
       return { ok: false, reason: cache.reason };
     }
@@ -577,6 +835,12 @@ function poke() {
 function start(cb) {
   if (typeof cb === "function") onChange = cb;
   if (timer) return;
+  const p = readPrefs();
+  log.credit(
+    "调度启动：积分同步=" + (p.creditSync ? "开" : "关") +
+      "，自动领取=" + (p.autoSignin ? "开" : "关") +
+      "，首次查询 " + FIRST_DELAY_MS + "ms 后"
+  );
   firstTimer = setTimeout(() => {
     poke();
   }, FIRST_DELAY_MS);

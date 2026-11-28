@@ -1,6 +1,6 @@
 [package]
 name = "workbuddy-hud"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 description = "WorkBuddy 状态面板（Tauri 外壳）"
 

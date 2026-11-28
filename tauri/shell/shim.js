@@ -106,6 +106,19 @@
       },
     },
 
+    /* 诊断日志（0.6.5）：外壳 hud.log + 后端 service.log，落在 exe 同级 logs\ */
+    diag: {
+      info: function () {
+        return invoke("hud_diag_info");
+      },
+      open: function () {
+        return invoke("hud_diag_open");
+      },
+      clear: function () {
+        return invoke("hud_diag_clear");
+      },
+    },
+
     autoHeight: function (h) {
       return invoke("hud_autoheight", { height: Number(h) || 0 });
     },

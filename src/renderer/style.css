@@ -414,11 +414,35 @@ body {
  * 用 div 而不是 <button>：button 在 baseline 对齐的 flex 行里会自己乱跑，
  * 这里只需要一块能点的区域，语义靠 role/aria 补上就够。
  */
-.credit-hit { cursor: default; }
-.credit-hit.can-claim { cursor: pointer; }
+.credit-hit { cursor: default; }.credit-hit.can-claim { cursor: pointer; }
 .credit-hit.can-claim:hover .credit-v { color: var(--accent); }
 .credit-hit.can-claim:hover .credit-k { color: var(--tx-2); }
 .credit-hit:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+/* 日志路径要能整段复制：允许换行，别撑破设置面板 */
+#diag-path {
+  white-space: pre-line;
+  word-break: break-all;
+  user-select: text;
+}
+
+/*
+ * 未连接 / 拿不到数据的原因。
+ * 旧版把原因塞进 title，鼠标不悬停就看不见，用户只知道"未连接"，不知道是哪一种。
+ * 这里直接摊开：左侧色条点明"这是异常"，文字用次要色，不喧宾夺主。
+ */
+.credit-why {
+  margin-top: 7px;
+  padding: 6px 8px 6px 9px;
+  border: 1px solid var(--bd);
+  border-left: 2px solid var(--err);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--tx-2);
+  font-size: 11px;
+  line-height: 1.55;
+  word-break: break-word;
+}
 
 /* ---------------- 确认卡 ---------------- */
 

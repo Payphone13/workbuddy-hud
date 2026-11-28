@@ -94,6 +94,9 @@
                 <span id="credit-signin" class="credit-v">—</span>
               </div>
             </div>
+            <!-- 未连接时把真实原因直接摊在这里：旧版只在悬停提示里给一句"未连接"，
+                 用户不知道是没登录、没装客户端，还是网络不通 -->
+            <div id="credit-why" class="credit-why hidden"></div>
           </section>
 
           <section id="perm" class="perm hidden">
@@ -217,6 +220,18 @@
           </div>
           <div id="log-msg" class="msg">这些是面板用来显示「思考与步骤」的旁听记录，只服务显示；清掉不影响 WorkBuddy 里的任务、对话和已经产出的结果。</div>
           <button id="btn-clear-log" class="wide">现在清空记录</button>
+        </div>
+
+        <div class="grp">
+          <div class="grp-t">诊断日志</div>
+          <div class="row">
+            <span class="row-l">存放位置</span>
+            <span id="val-diag-size" class="row-v">—</span>
+          </div>
+          <div id="diag-path" class="msg">正在读取…</div>
+          <button id="btn-diag-open" class="wide">打开日志文件夹</button>
+          <button id="btn-diag-clear" class="wide ghost">清空日志</button>
+          <div class="msg explain">面板出问题时，把文件夹里的 hud.log（外壳）和 service.log（后端）一起发出来即可定位。两份日志都不记录令牌、凭据内容和请求头。</div>
         </div>
 
         <div class="grp">

@@ -18,6 +18,7 @@ const path = require("path");
 const { StringDecoder } = require("string_decoder");
 
 const { SPOOL, HOST, PORT, PORT_FILE, PROJECTS_DIR } = require("./config");
+const log = require("./log");
 const { Store } = require("./store");
 const { TranscriptReader } = require("./transcript");
 const { readUsage, listSessions } = require("./credit");
@@ -442,11 +443,13 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 403, { ok: false, reason: "非本机请求" });
       return;
     }
+    log.credit("收到手动刷新请求");
     try {
       const creditInfo = await signin.refreshNow();
       sendJson(res, 200, { ok: true, creditInfo });
-    } catch (_) {
+    } catch (e) {
       // 失败也回 200：前端要的是"这次没成"，不是让 fetch 抛异常
+      log.credit("手动刷新异常：" + ((e && e.message) || e));
       sendJson(res, 200, { ok: false, reason: "刷新失败", creditInfo: signin.getInfo() });
     }
     return;
@@ -504,6 +507,8 @@ function start(preferredPort) {
         }
         console.log("WorkBuddy HUD 服务已启动：http://" + HOST + ":" + actual);
         console.log("  事件流 : " + SPOOL);
+        log.banner("server.js");
+        log.info("监听 " + HOST + ":" + actual + "，事件流 " + SPOOL);
         replaySpool();
         timers.push(setInterval(tailSpool, 300));
         timers.push(setInterval(pollTranscripts, 500));
@@ -545,9 +550,24 @@ function stop() {
 
 module.exports = { start, stop, store, withPending };
 
+/*
+ * 进程级兜底：没接住的异常必须留痕。
+ * 0.6.4 之前这类错误直接进 stderr，而 stderr 被外壳丢进 null ——
+ * 用户看到的现象是"面板忽然不动了"，日志里一个字都没有。
+ * 这里只记录不退出：面板后端退出等于界面全黑，代价比带病运行更高。
+ */
+process.on("uncaughtException", (e) => {
+  log.error("未捕获异常：" + ((e && e.stack) || e));
+});
+process.on("unhandledRejection", (e) => {
+  log.error("未处理的 Promise 拒绝：" + ((e && (e.stack || e.message)) || e));
+});
+
 if (require.main === module) {
   start(PORT).catch((err) => {
-    console.error("服务启动失败：" + (err && err.message ? err.message : String(err)));
+    const msg = err && err.message ? err.message : String(err);
+    log.error("服务启动失败：" + msg + "\n" + ((err && err.stack) || ""));
+    console.error("服务启动失败：" + msg);
     process.exit(1);
   });
 }

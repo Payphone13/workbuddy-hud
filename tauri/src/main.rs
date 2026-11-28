@@ -4,6 +4,7 @@
 // 数据、判断、权限代答全部留在 src/service 里，与 Electron 版共用同一份代码。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod logger;
 mod prefs;
 mod sys;
 
@@ -28,6 +29,7 @@ const BACKEND: &[(&str, &[u8])] = &[
     ("server.js", include_bytes!("../../src/service/server.js")),
     ("config.js", include_bytes!("../../src/service/config.js")),
     ("store.js", include_bytes!("../../src/service/store.js")),
+    ("log.js", include_bytes!("../../src/service/log.js")),
     ("transcript.js", include_bytes!("../../src/service/transcript.js")),
     ("credit.js", include_bytes!("../../src/service/credit.js")),
     ("permissions.js", include_bytes!("../../src/service/permissions.js")),
@@ -48,17 +50,10 @@ const HOOK_TOOLS: &[(&str, &[u8])] = &[
 const SHIM: &str = include_str!("../shell/shim.js");
 const PREFERRED_PORT: u16 = 47821;
 
-/// 无控制台的程序看不到 stderr，启动阶段的关键信息写文件
+/// 无控制台的程序看不到 stderr，关键信息写文件。
+/// 0.6.5 起落到 exe 同级 `logs\hud.log`，用户能直接找到并发回来。
 fn log(msg: &str) {
-    let dir = prefs::hud_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("tauri.log"))
-    {
-        let _ = writeln!(f, "{}", msg);
-    }
+    logger::info(msg);
 }
 
 pub struct St {
@@ -113,6 +108,9 @@ fn main() {
             hud_copy,
             hud_logs_info,
             hud_logs_clear,
+            hud_diag_info,
+            hud_diag_open,
+            hud_diag_clear,
             hud_autoheight,
             hud_sheet,
             hud_alert,
@@ -126,7 +124,30 @@ fn main() {
             hud_hooks,
         ])
         .setup(|app| {
-            log("--- 启动 ---");
+            /*
+             * 会话头：用户机器出问题时，这几行就是环境快照。
+             * 面板的高低压在 100% 与 125%/150% 缩放上表现不同，
+             * 所以版本、路径、缩放、工作区必须一起记，否则只看结论查不出因。
+             */
+            log(&format!(
+                "===== WorkBuddy 面板 v{} 启动 =====",
+                env!("CARGO_PKG_VERSION")
+            ));
+            log(&format!(
+                "exe  = {}",
+                std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "（取不到）".into())
+            ));
+            log(&format!("日志 = {}", logger::dir_string()));
+            if let Ok(Some(m)) = app.primary_monitor() {
+                log(&format!("显示器缩放 = {:.3}", m.scale_factor()));
+            }
+            if let Some((ax, ay, aw, ah)) = monitor_work_area(app.handle()) {
+                log(&format!(
+                    "工作区 = ({ax:.0},{ay:.0}) {aw:.0}x{ah:.0}（逻辑像素）"
+                ));
+            }
             let handle = app.handle().clone();
             let port = start_backend(&handle);
             log(&format!("后端端口 = {port}"));
@@ -350,7 +371,7 @@ fn start_backend(_app: &AppHandle) -> u16 {
     let script = match deploy_backend() {
         Ok(p) => p,
         Err(e) => {
-            log(&format!("释放后端脚本失败: {e}"));
+            logger::error(&format!("释放后端脚本失败: {e}"));
             return PREFERRED_PORT;
         }
     };
@@ -360,6 +381,9 @@ fn start_backend(_app: &AppHandle) -> u16 {
     let mut cmd = Command::new(&node);
     cmd.arg(&script)
         .env("WB_HUD_PORT", PREFERRED_PORT.to_string())
+        // 后端与外壳写同一目录下的两个文件，用户在同一个文件夹里就能看全
+        .env("HUD_LOG_DIR", logger::dir_string())
+        .env("HUD_VERSION", env!("CARGO_PKG_VERSION"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -385,7 +409,7 @@ fn start_backend(_app: &AppHandle) -> u16 {
             }
         }
         Err(e) => {
-            log(&format!("启动后端失败（{node}）: {e}"));
+            logger::error(&format!("启动后端失败（{node}）: {e}"));
             return PREFERRED_PORT;
         }
     }
@@ -403,7 +427,7 @@ fn start_backend(_app: &AppHandle) -> u16 {
         }
         std::thread::sleep(Duration::from_millis(60));
     }
-    log("等 port.txt 超时，用默认端口");
+    logger::warn("等 port.txt 超时，用默认端口");
     PREFERRED_PORT
 }
 
@@ -468,7 +492,7 @@ fn create_window(app: &AppHandle, prefs: &Prefs, ws: &WinState, port: u16) -> ta
         log(&format!("hwnd = {:#x}，调用 show_inactive", hwnd.0 as isize));
         sys::show_inactive(hwnd.0 as isize);
     } else {
-        log("取 hwnd 失败，退回 win.show()");
+        logger::warn("取 hwnd 失败，退回 win.show()");
         let _ = win.show();
     }
     // 非激活显示之后要再压一次置顶：ShowWindow 不改 z 序，
@@ -644,16 +668,28 @@ fn auto_resize(app: &AppHandle, raw: f64) {
 
     let (x, y, cw, ch) = logical_rect(&w);
     let sf = scale_of(&w);
-    let dpr = *st.dpr.lock().unwrap();
     let max_h = match sys::work_area(w.hwnd().map(|h| h.0 as isize).unwrap_or(0)) {
         Some((_, _, _, ah)) => (ah as f64 / sf) - 24.0,
         None => 900.0,
     };
 
-    // 页面报的是 CSS 像素，窗口按物理像素算，中间差一个 dpr
-    let want = raw * dpr;
-    let next = want.round().clamp(MIN_HEIGHT * dpr, max_h.max(MIN_HEIGHT * dpr));
-    if (ch - next).abs() <= 1.0 {
+    /*
+     * 0.6.5 修：单位换算错误。
+     *
+     * 页面报的 `scrollHeight` 已经是 CSS 像素，而 `set_rect` 用的是
+     * `LogicalSize` —— 两者同一套单位，不能再乘 dpr。
+     * 0.6.4 在这里乘了一次，100% 缩放下 dpr=1.0 看不出问题；
+     * 125% / 150% 的机器上窗口高度会比内容多出 25% / 50%，下方一大片空白，
+     * 而且 `logical_rect` 读回来就是这个错误值，`|ch-next| <= 1` 成立，
+     * 窗口被固定死 —— 点"恢复自适应"只会重算出同一个错数，自然"没有变矮"。
+     */
+    let next = raw.round().clamp(MIN_HEIGHT, max_h.max(MIN_HEIGHT));
+    let changed = (ch - next).abs() > 1.0;
+    if changed {
+        log(&format!(
+            "自适应：内容 {raw:.1} 当前 {ch:.1} → {next:.1}（上限 {max_h:.0}，缩放 {sf:.2}）"
+        ));
+    } else {
         return;
     }
 
@@ -700,10 +736,9 @@ fn apply_fold(app: &AppHandle, folded: bool) {
     st.folded.store(folded, Ordering::Relaxed);
     let Some(w) = app.get_webview_window("main") else { return };
     let (x, y, cw, ch) = logical_rect(&w);
-    let dpr = *st.dpr.lock().unwrap();
 
     if folded {
-        let target = FOLDED_HEIGHT * dpr;
+        let target = FOLDED_HEIGHT;
         /*
          * 折叠时**底边固定**、往上收。
          *
@@ -714,8 +749,8 @@ fn apply_fold(app: &AppHandle, folded: bool) {
          */
         set_panel_rect(app, &w, x, y + ch - target, cw, target);
     } else {
-        let back = st.ws.lock().unwrap().height.max(MIN_HEIGHT * dpr);
-        let h = if back > FOLDED_HEIGHT * dpr { back } else { HEIGHT * dpr };
+        let back = st.ws.lock().unwrap().height.max(MIN_HEIGHT);
+        let h = if back > FOLDED_HEIGHT { back } else { HEIGHT };
         /*
          * 展开一律吸回屏幕右下角：折叠条可能已经被拖到任何地方，
          * 按"用户拖到哪就在哪展开"会让面板出现在奇怪的位置。
@@ -1203,19 +1238,57 @@ fn hud_autoheight(app: AppHandle, height: f64) {
     auto_resize(&app, height);
 }
 
+/* ---------------- 诊断日志（0.6.5） ---------------- */
+
+/// 给设置面板用：日志在哪、多大。用户照着这个路径就能把文件发出来。
+#[tauri::command]
+fn hud_diag_info() -> serde_json::Value {
+    let dir = logger::dir().to_path_buf();
+    let size = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0);
+    let hud = size("hud.log");
+    let svc = size("service.log");
+    serde_json::json!({
+        "dir": logger::dir_string(),
+        "hudSize": hud,
+        "serviceSize": svc,
+        "hudText": fmt_size(hud),
+        "serviceText": fmt_size(svc),
+        "totalText": fmt_size(hud + svc),
+    })
+}
+
+/// 打开日志所在文件夹。explorer 打开目录后自己退出码是 1，只看 spawn 是否成功。
+#[tauri::command]
+fn hud_diag_open() -> bool {
+    let dir = logger::dir().to_path_buf();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    Command::new("explorer")
+        .arg(dir.as_os_str())
+        .spawn()
+        .is_ok()
+}
+
+#[tauri::command]
+fn hud_diag_clear() -> serde_json::Value {
+    let ok = logger::clear().is_ok();
+    log("用户清空了诊断日志");
+    serde_json::json!({ "ok": ok })
+}
+
 #[tauri::command]
 fn hud_sheet(app: AppHandle, open: bool) {
     let Some(st) = app.try_state::<St>() else { return };
     let Some(w) = app.get_webview_window("main") else { return };
     let (x, y, cw, ch) = logical_rect(&w);
-    let dpr = *st.dpr.lock().unwrap();
 
     if open {
         if st.sheet.swap(true, Ordering::Relaxed) {
             return;
         }
         *st.sheet_back.lock().unwrap() = ch;
-        let target = (SHEET_HEIGHT * dpr).max(ch);
+        let target = SHEET_HEIGHT.max(ch);
         let mut ny = y + ch - target;
         if let Some((_, ay, _, _)) = sys::work_area(w.hwnd().map(|h| h.0 as isize).unwrap_or(0)) {
             let sf = scale_of(&w);
@@ -1230,7 +1303,7 @@ fn hud_sheet(app: AppHandle, open: bool) {
             return;
         }
         let back = *st.sheet_back.lock().unwrap();
-        if back > MIN_HEIGHT * dpr {
+        if back > MIN_HEIGHT {
             set_panel_rect(&app, &w, x, y + ch - back, cw, back);
         }
         let _ = app.emit("hud:remeasure", ());
@@ -1429,10 +1502,26 @@ fn broadcast_prefs(app: &AppHandle) {
     let _ = app.emit("hud:prefs", &p);
 }
 
+static DPR_SEEN: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 fn hud_dpr(app: AppHandle, value: f64) {
-    if value > 0.1 && value < 8.0 {
-        *app.state::<St>().dpr.lock().unwrap() = value;
+    if !(value > 0.1 && value < 8.0) {
+        return;
+    }
+    let changed = {
+        let st = app.state::<St>();
+        let mut d = st.dpr.lock().unwrap();
+        let c = (*d - value).abs() > 0.001;
+        *d = value;
+        c
+    };
+    // 0.6.5 起 dpr 只用于记录，不参与任何尺寸换算：
+    // 窗口尺寸一律按逻辑像素下发，见 auto_resize 里的说明
+    if changed || !DPR_SEEN.swap(true, Ordering::Relaxed) {
+        log(&format!(
+            "页面上报 devicePixelRatio = {value:.3}（仅记录，尺寸按逻辑像素下发）"
+        ));
     }
 }
 

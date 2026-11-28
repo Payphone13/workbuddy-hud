@@ -109,6 +109,7 @@ const el = {
   creditLeft: $("credit-left"),
   creditSignin: $("credit-signin"),
   creditTip: $("credit-tip"),
+  creditWhy: $("credit-why"),
   creditRefresh: $("credit-refresh"),
   creditClaim: $("credit-claim"),
   setCreditSync: $("set-credit-sync"),
@@ -141,6 +142,10 @@ const el = {
   valLogSize: $("val-logsize"),
   btnClearLog: $("btn-clear-log"),
   logMsg: $("log-msg"),
+  diagPath: $("diag-path"),
+  valDiagSize: $("val-diag-size"),
+  btnDiagOpen: $("btn-diag-open"),
+  btnDiagClear: $("btn-diag-clear"),
 };
 
 let prefs = JSON.parse(JSON.stringify(DEFAULT_PREFS));
@@ -1422,6 +1427,71 @@ if (el.btnClearLog) {
   });
 }
 
+/* ---------------- 诊断日志（0.6.5） ----------------
+ * 外壳 hud.log + 后端 service.log，落在 exe 同级 logs\ 目录。
+ * 用户把这两份发过来就能定位"积分未连接""窗口高度不对"这类问题。
+ */
+
+let diagInfo = null;
+
+function renderDiag(extra) {
+  if (!el.diagPath) return;
+  if (!diagInfo) {
+    el.diagPath.textContent = "读取中…";
+    return;
+  }
+  el.diagPath.textContent =
+    "外壳 " + (diagInfo.hudText || "0 B") +
+    " · 后端 " + (diagInfo.serviceText || "0 B") + "\n" +
+    (diagInfo.dir || "（取不到路径）") +
+    (extra ? "\n" + extra : "");
+  if (el.valDiagSize) el.valDiagSize.textContent = diagInfo.totalText || "—";
+}
+
+async function refreshDiag() {
+  if (!bridge || !bridge.diag) {
+    if (el.diagPath) el.diagPath.textContent = "当前外壳不支持诊断日志（需 0.6.5 及以上）";
+    return;
+  }
+  try {
+    diagInfo = await bridge.diag.info();
+  } catch (_) {
+    diagInfo = null;
+    if (el.diagPath) el.diagPath.textContent = "读取日志信息失败。";
+    return;
+  }
+  renderDiag();
+}
+
+if (el.btnDiagOpen) {
+  el.btnDiagOpen.addEventListener("click", async () => {
+    if (!bridge || !bridge.diag) return;
+    let ok = false;
+    try {
+      ok = await bridge.diag.open();
+    } catch (_) {
+      ok = false;
+    }
+    renderDiag(ok ? "" : "打不开文件夹，请按上面的路径自己找");
+  });
+}
+
+if (el.btnDiagClear) {
+  el.btnDiagClear.addEventListener("click", async () => {
+    if (!bridge || !bridge.diag) return;
+    el.btnDiagClear.disabled = true;
+    try {
+      const r = await bridge.diag.clear();
+      await refreshDiag();
+      renderDiag(r && r.ok ? "已清空，之后产生的新日志会从零开始" : "清空失败（文件可能正被写入），稍后再试");
+    } catch (_) {
+      renderDiag("清空失败，稍后再试");
+    } finally {
+      el.btnDiagClear.disabled = false;
+    }
+  });
+}
+
 /* ---------------- 积分 ----------------
  * 数据来自后端快照的 creditInfo（字段白名单），四态：
  *   未开启 / 查询中 / 未连接（或这次没更新） / 正常
@@ -1452,6 +1522,8 @@ function renderCredit(info) {
   el.creditClaim.setAttribute("aria-disabled", "true");
   creditCanClaim = false;
   el.creditClaim.title = "";
+  // 每次重绘先收起来，只在下面明确需要时展开
+  if (el.creditWhy) el.creditWhy.classList.add("hidden");
 
   /* 1) 开关没开：两格空着，并说明去哪儿开 */
   if (!c.enabled || c.state === "disabled") {
@@ -1496,6 +1568,11 @@ function renderCredit(info) {
     const why = c.reason || "拿不到数据，请确认 WorkBuddy 已登录";
     el.creditLeft.title = why;
     el.creditSignin.title = why;
+    // 0.6.5：原因直接摊在下面一行，不用悬停才看得到
+    if (el.creditWhy) {
+      el.creditWhy.textContent = why;
+      el.creditWhy.classList.remove("hidden");
+    }
     return;
   }
 
@@ -1535,6 +1612,11 @@ function renderCredit(info) {
     el.creditTip.textContent = "未更新";
     el.creditTip.className = "muted wait-text";
     el.creditTip.title = c.reason || "这次没取到新数据，显示的是上一次的结果";
+    // 有旧数据时不必重复报错，但"为什么没更新"要看得见
+    if (c.state === "error" && el.creditWhy && c.reason) {
+      el.creditWhy.textContent = "上次更新失败：" + c.reason + "（下面显示的是上一次的数据）";
+      el.creditWhy.classList.remove("hidden");
+    }
   } else {
     el.creditTip.textContent = timeAgo(c.updatedAt);
     el.creditTip.className = "muted";
@@ -1742,6 +1824,7 @@ function openSheet() {
   el.sheet.classList.remove("hidden");
   syncSettingsUI();
   refreshLogSize();
+  refreshDiag();
   setMsg("", true);
 }
 
