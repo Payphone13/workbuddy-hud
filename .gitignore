@@ -1,5 +1,6 @@
 # 临时文件与本地构建缓存
 tmp/
+output/
 dist/
 node_modules/
 tauri/target/
